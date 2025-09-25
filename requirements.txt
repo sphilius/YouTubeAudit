@@ -1,0 +1,28 @@
+# Backend
+fastapi
+uvicorn[standard]
+celery
+redis
+python-dotenv
+
+# Vector Store
+faiss-cpu
+
+# Frontend
+streamlit
+requests
+
+# Data Processing
+pandas
+google-api-python-client
+google-auth-oauthlib
+google-auth-httplib2
+pytube
+python-dateutil
+# Add other data processing libraries as needed, e.g., scikit-learn for clustering
+scikit-learn
+numpy
+
+# Logging
+structlog
+rich
