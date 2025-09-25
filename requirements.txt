@@ -19,9 +19,12 @@ google-auth-oauthlib
 google-auth-httplib2
 pytube
 python-dateutil
-# Add other data processing libraries as needed, e.g., scikit-learn for clustering
 scikit-learn
 numpy
+beautifulsoup4
+lxml
+google-generativeai
+sentence-transformers
 
 # Logging
 structlog
