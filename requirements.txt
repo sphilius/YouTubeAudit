@@ -1,9 +1,8 @@
 # Backend
-fastapi
-uvicorn[standard]
-celery
-redis
+Flask
+gunicorn
 python-dotenv
+Werkzeug
 
 # Vector Store
 faiss-cpu
@@ -22,6 +21,9 @@ python-dateutil
 # Add other data processing libraries as needed, e.g., scikit-learn for clustering
 scikit-learn
 numpy
+
+# AI & Embeddings
+sentence-transformers
 
 # Logging
 structlog

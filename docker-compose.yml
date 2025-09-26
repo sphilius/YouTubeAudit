@@ -1,61 +1,36 @@
 version: "3.8"
+
 services:
-  web:
+  backend:
     build:
       context: .
-      dockerfile: ./Dockerfile
-    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000
-    volumes:
-      - .:/app
+      dockerfile: backend/Dockerfile
     ports:
       - "8000:8000"
-    env_file:
-      - .env
-    depends_on:
-      - redis
-      - worker
-      - beat
-
-  worker:
-    build:
-      context: .
-      dockerfile: ./Dockerfile
-    command: celery -A backend.tasks worker --loglevel=info
     volumes:
-      - .:/app
+      - ./backend:/app
+      - ./uploads:/app/uploads
     env_file:
       - .env
-    depends_on:
-      - redis
+    environment:
+      - PYTHONUNBUFFERED=1
 
-  beat:
+  frontend:
     build:
       context: .
-      dockerfile: ./Dockerfile
-    command: celery -A backend.tasks beat --loglevel=info
+      dockerfile: frontend/Dockerfile
+    ports:
+      - "8501:8501"
     volumes:
-      - .:/app
+      - ./frontend:/app
     env_file:
       - .env
+    environment:
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_HEADLESS=true
+      - API_URL=http://backend:8000
     depends_on:
-      - redis
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-
-  flower:
-    build:
-      context: .
-      dockerfile: ./Dockerfile
-    command: celery -A backend.tasks flower --port=5555
-    ports:
-      - "5555:5555"
-    env_file:
-      - .env
-    depends_on:
-      - redis
+      - backend
 
 networks:
   default:

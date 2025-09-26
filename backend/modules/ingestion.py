@@ -1,29 +1,40 @@
-from typing import Dict, Any
+import zipfile
+import json
+from typing import List, Dict, Any
 
-def parse_takeout_file(file_path: str) -> Dict[str, Any]:
+def _parse_json_file(file_path: str) -> List[Dict[str, Any]]:
+    """Reads a simple JSON file containing a list of video entries."""
+    with open(file_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+def _parse_zip_file(file_path: str) -> List[Dict[str, Any]]:
     """
-    Parses a YouTube Takeout file to extract watch history, subscriptions, etc.
+    Extracts and parses the watch-history.json from a YouTube Takeout zip file.
+    """
+    with zipfile.ZipFile(file_path, 'r') as z:
+        # Find the watch history file in the zip archive
+        watch_history_files = [f for f in z.namelist() if 'watch-history.json' in f]
+        if not watch_history_files:
+            raise FileNotFoundError("Could not find 'watch-history.json' in the provided zip file.")
+
+        # Read the found file
+        with z.open(watch_history_files[0]) as f:
+            data = json.load(f)
+            return data
+
+def parse_takeout_file(file_path: str) -> List[Dict[str, Any]]:
+    """
+    Parses a YouTube Takeout file (either .zip or .json) to extract watch history.
 
     Args:
         file_path: The path to the Takeout file.
 
     Returns:
-        A dictionary containing the parsed data.
+        A list of dictionaries, where each dictionary represents a watched video.
     """
-    # Placeholder implementation
-    print(f"Parsing Takeout file at {file_path}...")
-    return {"watch_history": [], "subscriptions": []}
-
-def fetch_data_from_api(oauth_token: str) -> Dict[str, Any]:
-    """
-    Fetches user data from the YouTube API using an OAuth token.
-
-    Args:
-        oauth_token: The user's OAuth token.
-
-    Returns:
-        A dictionary containing the fetched data.
-    """
-    # Placeholder implementation
-    print("Fetching data from YouTube API...")
-    return {"watch_history": [], "subscriptions": []}
+    if file_path.endswith('.zip'):
+        return _parse_zip_file(file_path)
+    elif file_path.endswith('.json'):
+        return _parse_json_file(file_path)
+    else:
+        raise ValueError("Unsupported file type. Please upload a .zip or .json file.")
