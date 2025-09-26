@@ -56,8 +56,47 @@ This separation ensures the UI remains responsive and stable, as all computation
     *   Click the "Analyze Watch History" button.
     *   The analysis will run on the backend. This may take several minutes depending on the size of your watch history.
     *   Once complete, the results will be displayed on the dashboard.
+## Local Development (Without Docker) - Windows
 
-## Local Development (Without Docker)
+A. **Set up your environment variables:**
+
+   If you are using Command Prompt (cmd.exe):
+    ```bash
+    set API_BEARER_TOKEN="a-secure-static-token"
+    set GOOGLE_API_KEY="your-google-api-key-here"
+    ```
+
+
+   If you are using PowerShell:
+    ```bash
+    $env:API_BEARER_TOKEN="a-secure-static-token"
+    $env:GOOGLE_API_KEY="your-google-api-key-here"
+    ```
+
+
+B. **Run the Backend and Frontend:**
+
+1. Install Dependencies: Make sure you've installed the project's dependencies first:
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+2. Run the Backend Server: Open a terminal (Command Prompt or PowerShell) and run:
+    ```bash
+    cd backend
+    flask run --host=0.0.0.0 --port=8000
+    ```
+
+
+3. Run the Frontend App: Open a second, separate terminal and run:
+    ```bash
+    cd frontend
+    streamlit run app.py
+    ```
+
+
+    
+## Local Development (Without Docker) - Mac OS and Linux
 
 If you prefer to run the services locally without Docker:
 
