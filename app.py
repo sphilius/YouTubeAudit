@@ -29,6 +29,8 @@ def extract_video_id(url):
 def get_video_details(_youtube_api, video_ids):
     """Fetches video details from the YouTube API in batches."""
     video_details = []
+    # The API allows fetching details for up to 50 videos at a time
+    video_ids = list(set(filter(None, video_ids)))
     for i in range(0, len(video_ids), 50):
         batch_ids = video_ids[i:i+50]
         request = _youtube_api.videos().list(
@@ -41,9 +43,7 @@ def get_video_details(_youtube_api, video_ids):
 
 def load_embedding_model():
     """Loads the sentence transformer model."""
-    with st.spinner("Downloading AI model... This may take a moment."):
-        model = SentenceTransformer('all-MiniLM-L6-v2')
-    return model
+    return SentenceTransformer('all-MiniLM-L6-v2')
 
 def generate_embeddings(_model, texts):
     """Generates embeddings for a list of texts."""
@@ -51,12 +51,14 @@ def generate_embeddings(_model, texts):
 
 def cluster_videos(embeddings, num_clusters=20):
     """Clusters videos using KMeans."""
+    from sklearn.cluster import KMeans
     kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init='auto')
     kmeans.fit(embeddings)
     return kmeans.labels_
 
 def get_topic_representation(df, cluster_id):
     """Generates a topic label for a cluster using TF-IDF."""
+    from sklearn.feature_extraction.text import TfidfVectorizer
     cluster_texts = df[df['cluster'] == cluster_id]['text_features'].tolist()
     if not cluster_texts:
         return "N/A"
@@ -79,7 +81,6 @@ with st.sidebar:
 
     st.header("📂 Upload Your Data")
     uploaded_watch_history = st.file_uploader("Upload your `watch-history.html`", type="html")
-    uploaded_subscriptions = st.file_uploader("Upload your `subscriptions.csv` (optional)", type="csv")
 
     st.header("📊 Analysis Parameters")
     num_clusters = st.slider("Number of Topic Clusters", min_value=5, max_value=50, value=20, step=1)
@@ -117,27 +118,20 @@ if st.button("🚀 Analyze My YouTube Data", type="primary", use_container_width
                 st.error("Could not fetch video details. Check your API key and permissions.")
                 st.stop()
 
-            df = pd.DataFrame([{
-                'id': item['id'],
-                'title': item['snippet']['title'],
-                'description': item['snippet']['description'],
-                'channelTitle': item['snippet']['channelTitle'],
-                'tags': ", ".join(item['snippet'].get('tags', [])),
-            } for item in video_details])
+            df = pd.DataFrame([{'id': item['id'], 'title': item['snippet']['title'], 'description': item['snippet']['description'], 'channelTitle': item['snippet']['channelTitle'], 'tags': ", ".join(item['snippet'].get('tags', [])),} for item in video_details])
 
             df['video_url'] = "https://www.youtube.com/watch?v=" + df['id']
             st.success(f"Successfully fetched details for {len(df)} videos.")
 
-            # 4. Load Model and Generate Embeddings
-            progress_bar.progress(30, text="3️⃣ Loading AI model...")
-            embedding_model = load_embedding_model()
-
-            progress_bar.progress(40, text="4️⃣ Generating text embeddings...")
             df['text_features'] = df['title'] + " " + df['description'] + " " + df['tags']
+
+            # 4. Load Model and Generate Embeddings
+            progress_bar.progress(40, text="3️⃣ Generating text embeddings...")
+            embedding_model = load_embedding_model()
             embeddings = generate_embeddings(embedding_model, df['text_features'].tolist())
 
             # 5. Cluster Videos
-            progress_bar.progress(70, text="5️⃣ Clustering videos into topics...")
+            progress_bar.progress(70, text="4️⃣ Clustering videos into topics...")
             actual_num_clusters = min(num_clusters, len(df) // 5)
             if actual_num_clusters < 2:
                 st.error("Not enough videos to perform clustering.")
@@ -145,7 +139,7 @@ if st.button("🚀 Analyze My YouTube Data", type="primary", use_container_width
             df['cluster'] = cluster_videos(embeddings, num_clusters=actual_num_clusters)
 
             # 6. Generate Topic Labels
-            progress_bar.progress(90, text="6️⃣ Generating topic labels...")
+            progress_bar.progress(90, text="5️⃣ Generating topic labels...")
             topic_labels = [get_topic_representation(df, i) for i in range(actual_num_clusters)]
             df['topic'] = df['cluster'].apply(lambda x: topic_labels[x])
 
@@ -156,6 +150,7 @@ if st.button("🚀 Analyze My YouTube Data", type="primary", use_container_width
 
         except Exception as e:
             st.error(f"An error occurred: {e}")
+            st.exception(e)
             st.stop()
 
 # --- Visualization ---
