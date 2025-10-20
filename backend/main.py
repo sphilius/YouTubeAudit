@@ -1,143 +1,345 @@
+"""
+YouTube Topic Audit Engine - Main Flask Application
+
+This is the main entry point for the backend Flask application that provides
+the analysis API for processing YouTube watch history.
+"""
+
 from flask import Flask, request, jsonify
-import structlog
 import os
 import tempfile
-import json
 from werkzeug.utils import secure_filename
+from typing import Dict, Any
 
-# Import your existing analysis modules
-from backend.modules import ingestion, enrichment, embedding, clustering, labeling, scoring
+# Import configuration and logging
+from backend.config import get_config, validate_config
+from backend.utils.logging_config import configure_logging, get_logger
 
-# --- Logging Setup ---
-structlog.configure(
-    processors=[
-        structlog.stdlib.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.JSONRenderer(),
-    ],
-    logger_factory=structlog.stdlib.LoggerFactory(),
-    wrapper_class=structlog.stdlib.BoundLogger,
-    cache_logger_on_first_use=True,
+# Import middleware
+from backend.middleware.correlation import CorrelationMiddleware
+from backend.middleware.error_handler import ErrorHandlerMiddleware
+
+# Import validators
+from backend.validators import (
+    validate_file_upload,
+    validate_saved_file,
+    validate_google_api_key,
+    validate_bearer_token,
+    sanitize_filename
 )
-log = structlog.get_logger()
 
-# --- Flask App ---
+# Import exceptions
+from backend.exceptions import YouTubeAuditError, ValidationError
+
+# Import analysis modules
+from backend.modules import ingestion, enrichment, embedding, clustering, scoring
+
+# ============================================================================
+# Application Initialization
+# ============================================================================
+
+# Load and validate configuration
+config = get_config()
+is_valid, config_errors = validate_config()
+if not is_valid:
+    print("Configuration errors found:")
+    for error in config_errors:
+        print(f"  - {error}")
+    print("Proceeding with warnings...")
+
+# Configure logging
+configure_logging(
+    log_level=config.log_level,
+    log_format=config.log_format,
+    log_file=config.log_file,
+    enable_sanitization=config.sanitize_logs,
+    development_mode=config.is_development()
+)
+
+log = get_logger(__name__)
+log.info(
+    "Starting YouTube Audit Engine",
+    environment=config.environment,
+    debug=config.debug,
+    log_level=config.log_level
+)
+
+# Create Flask application
 app = Flask(__name__)
+app.config['SECRET_KEY'] = config.secret_key
+app.config['UPLOAD_FOLDER'] = str(config.upload_folder)
+app.config['MAX_CONTENT_LENGTH'] = config.max_upload_size_bytes
 
-# --- Configuration ---
-# A simple, static token for demonstration purposes.
-# In a real application, use a more robust authentication method.
-API_BEARER_TOKEN = os.getenv("API_BEARER_TOKEN", "a-secure-static-token")
-UPLOAD_FOLDER = 'uploads'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+# Initialize middleware
+CorrelationMiddleware(app)
+ErrorHandlerMiddleware(app)
+
+log.info("Flask application initialized", upload_folder=config.upload_folder)
 
 
-def run_analysis_pipeline(file_path: str, api_key: str):
+# ============================================================================
+# Pipeline Functions
+# ============================================================================
+
+def run_analysis_pipeline(file_path: str, api_key: str) -> Dict[str, Any]:
     """
     Synchronously runs the entire analysis pipeline.
+
+    Args:
+        file_path: Path to the uploaded Takeout file
+        api_key: Google API key for YouTube API
+
+    Returns:
+        Dictionary containing analysis results
+
+    Raises:
+        YouTubeAuditError: If any step of the pipeline fails
     """
-    log.info("Pipeline started", file_path=file_path)
+    log.info("Analysis pipeline started", file_path=file_path)
 
     try:
         # Step 1: Ingestion
-        log.info("Ingesting data...")
-        # The ingestion module needs to be adapted to handle the file path
+        log.info("Step 1/5: Ingesting data")
         raw_data = ingestion.parse_takeout_file(file_path)
-        video_ids = [item['contentDetails']['videoId'] for item in raw_data if 'videoId' in item.get('contentDetails', {})]
-        log.info(f"Ingested {len(video_ids)} video IDs.")
+
+        # Extract video IDs from the raw data
+        video_ids = []
+        for item in raw_data:
+            content_details = item.get('contentDetails', {})
+            if 'videoId' in content_details:
+                video_ids.append(content_details['videoId'])
+
+        log.info("Ingestion complete", video_count=len(video_ids))
+
+        if len(video_ids) == 0:
+            raise ValidationError(
+                message="No video IDs found in the watch history",
+                user_message="Your watch history appears to be empty or in an unexpected format."
+            )
 
         # Step 2: Enrichment
-        log.info("Enriching video metadata...")
-        metadata = enrichment.enrich_video_metadata(video_ids, api_key)
-        log.info(f"Enriched metadata for {len(metadata)} videos.")
+        log.info("Step 2/5: Enriching video metadata", video_count=len(video_ids))
+        # Note: api_key is passed but enrichment module is currently a placeholder
+        metadata = enrichment.enrich_video_metadata(video_ids)
+        log.info("Enrichment complete", metadata_count=len(metadata))
 
         # Step 3: Embedding
-        log.info("Generating embeddings...")
+        log.info("Step 3/5: Generating embeddings", video_count=len(metadata))
         video_embeddings = embedding.get_video_embeddings(metadata)
-        log.info("Embeddings generated.")
+        log.info("Embedding generation complete", embeddings_shape=video_embeddings.shape)
 
         # Step 4: Clustering
-        log.info("Clustering videos...")
-        # Let's make the number of clusters dynamic or configurable if needed
-        num_clusters = min(10, len(video_ids) // 5) # Example logic
-        if num_clusters < 2:
-            num_clusters = 2
+        log.info("Step 4/5: Clustering videos")
+
+        # Determine optimal number of clusters
+        num_clusters = min(
+            config.max_clusters,
+            max(config.min_clusters, len(video_ids) // 5)
+        )
+        num_clusters = max(num_clusters, config.min_clusters)
+
+        log.info("Calculated cluster count", num_clusters=num_clusters, video_count=len(video_ids))
+
         clusters = clustering.cluster_videos(video_embeddings, num_clusters=num_clusters)
-        log.info(f"Clustered videos into {num_clusters} topics.")
+        log.info("Clustering complete", cluster_count=len(clusters))
 
-        # Step 5: Labeling
-        log.info("Generating labels for clusters...")
-        labeled_clusters = labeling.label_clusters_with_gpt(clusters, metadata, api_key)
-        log.info("Labels generated.")
+        # Step 5: Scoring
+        log.info("Step 5/5: Scoring clusters", cluster_count=len(clusters))
+        scored_results = scoring.score_clusters(clusters, metadata)
+        log.info("Scoring complete")
 
-        # Step 6: Scoring
-        log.info("Scoring clusters...")
-        scored_results = scoring.score_clusters(labeled_clusters, metadata)
-        log.info("Scoring complete.")
+        # Build final results
+        results = {
+            "status": "success",
+            "summary": {
+                "total_videos": len(video_ids),
+                "total_clusters": len(clusters),
+                "cluster_distribution": {k: len(v) for k, v in clusters.items()}
+            },
+            "clusters": scored_results
+        }
 
-        log.info("Pipeline finished successfully")
-        return scored_results
+        log.info("Analysis pipeline completed successfully",
+                 total_videos=len(video_ids),
+                 total_clusters=len(clusters))
+
+        return results
+
+    except YouTubeAuditError as e:
+        log.error("Pipeline failed with known error",
+                 error_type=type(e).__name__,
+                 error_code=e.error_code,
+                 message=e.message)
+        raise
 
     except Exception as e:
-        log.error("Pipeline failed", error=str(e), exc_info=True)
-        # Re-raise the exception to be caught by the endpoint handler
+        log.error("Pipeline failed with unexpected error",
+                 error_type=type(e).__name__,
+                 error=str(e),
+                 exc_info=True)
         raise
+
+
+# ============================================================================
+# API Endpoints
+# ============================================================================
+
+@app.route("/", methods=["GET"])
+def health_check():
+    """
+    Health check endpoint.
+
+    Returns:
+        JSON response with application status
+    """
+    return jsonify({
+        "status": "ok",
+        "service": "youtube-audit-engine",
+        "version": "1.0.0",
+        "environment": config.environment
+    })
+
+
+@app.route("/health", methods=["GET"])
+def detailed_health():
+    """
+    Detailed health check with component status.
+
+    Returns:
+        JSON response with detailed health information
+    """
+    health_status = {
+        "status": "healthy",
+        "components": {
+            "api": "ok",
+            "configuration": "ok" if is_valid else "degraded",
+            "upload_folder": "ok" if os.access(config.upload_folder, os.W_OK) else "error"
+        },
+        "configuration_errors": config_errors if not is_valid else []
+    }
+
+    status_code = 200 if health_status["status"] == "healthy" else 503
+
+    return jsonify(health_status), status_code
+
 
 @app.route("/analyze", methods=["POST"])
 def analyze():
     """
-    The main analysis endpoint.
-    Accepts file upload and an API key.
+    Main analysis endpoint.
+
+    Accepts file upload and API key to run the analysis pipeline.
+
+    Request:
+        - Headers: Authorization: Bearer <token>
+        - Form data:
+            - file: YouTube Takeout file (.zip or .json)
+            - api_key: Google API key
+
+    Returns:
+        JSON response with analysis results
+
+    Raises:
+        Various YouTubeAuditError exceptions for different failure cases
     """
+    log.info("Received analysis request",
+             method=request.method,
+             content_type=request.content_type)
+
     # 1. Authentication
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
-        return jsonify({"error": "Authorization header missing or malformed"}), 401
+        log.warning("Missing or malformed authorization header")
+        raise ValidationError(
+            message="Authorization header missing or malformed",
+            error_code="AUTH_001",
+            user_message="Authentication required. Please provide a valid Bearer token."
+        )
 
     token = auth_header.split(" ")[1]
-    if token != API_BEARER_TOKEN:
-        return jsonify({"error": "Invalid API key"}), 401
+    validate_bearer_token(token, config.api_bearer_token)
+    log.debug("Authentication successful")
 
-    # 2. File Handling
+    # 2. File Upload Validation
     if 'file' not in request.files:
-        return jsonify({"error": "No file part in the request"}), 400
+        log.error("No file in request")
+        raise ValidationError(
+            message="No file part in the request",
+            user_message="Please upload a file."
+        )
 
     file = request.files['file']
-    if file.filename == '':
-        return jsonify({"error": "No selected file"}), 400
+    validate_file_upload(file)
+    log.info("File upload validated", filename=file.filename)
 
-    # 3. API Key for external services (like Google AI)
+    # 3. API Key Validation
     api_key = request.form.get("api_key")
-    if not api_key:
-        return jsonify({"error": "API key for analysis is missing"}), 400
+    if api_key:
+        api_key = validate_google_api_key(api_key)
+        log.debug("Google API key validated")
+    else:
+        # API key is optional if config has one
+        if config.google_api_key:
+            api_key = config.google_api_key
+            log.debug("Using API key from configuration")
+        else:
+            raise ValidationError(
+                message="No API key provided",
+                user_message="Please provide a Google API key for video metadata enrichment."
+            )
 
-    if file:
-        filename = secure_filename(file.filename)
-        temp_dir = tempfile.mkdtemp()
-        file_path = os.path.join(temp_dir, filename)
-        file.save(file_path)
-        log.info("File saved temporarily", path=file_path)
+    # 4. Save File Securely
+    filename = secure_filename(file.filename)
+    filename = sanitize_filename(filename)
 
-        try:
-            # 4. Run Pipeline
-            results = run_analysis_pipeline(file_path, api_key)
-            return jsonify(results)
-        except Exception as e:
-            return jsonify({"error": "An error occurred during analysis", "details": str(e)}), 500
-        finally:
-            # 5. Cleanup
-            log.info("Cleaning up temporary file", path=file_path)
-            os.remove(file_path)
-            os.rmdir(temp_dir)
+    temp_dir = tempfile.mkdtemp()
+    file_path = os.path.join(temp_dir, filename)
 
-    return jsonify({"error": "An unknown error occurred"}), 500
+    file.save(file_path)
+    log.info("File saved temporarily", path=file_path, size_bytes=os.path.getsize(file_path))
+
+    try:
+        # Validate saved file
+        validate_saved_file(file_path)
+
+        # 5. Run Analysis Pipeline
+        log.info("Starting analysis pipeline")
+        results = run_analysis_pipeline(file_path, api_key)
+
+        log.info("Analysis request completed successfully")
+        return jsonify(results)
+
+    finally:
+        # 6. Cleanup
+        if config.cleanup_temp_files:
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    log.debug("Temporary file removed", path=file_path)
+
+                if os.path.exists(temp_dir):
+                    os.rmdir(temp_dir)
+                    log.debug("Temporary directory removed", path=temp_dir)
+            except Exception as e:
+                log.warning("Failed to cleanup temporary files",
+                           error=str(e),
+                           file_path=file_path)
 
 
-@app.route("/")
-def health_check():
-    """A simple health check endpoint."""
-    return jsonify({"status": "ok"})
+# ============================================================================
+# Application Entry Point
+# ============================================================================
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000, debug=True)
+    log.info(
+        "Starting Flask development server",
+        host=config.host,
+        port=config.port,
+        debug=config.debug
+    )
+
+    app.run(
+        host=config.host,
+        port=config.port,
+        debug=config.debug
+    )
