@@ -1,24 +1,139 @@
 version: "3.8"
 
 services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: youtube_audit_postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=youtube_audit
+      - POSTGRES_PASSWORD=youtube_audit_password
+      - POSTGRES_DB=youtube_audit
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U youtube_audit"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache & Message Broker
+  redis:
+    image: redis:7-alpine
+    container_name: youtube_audit_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Flask Backend API
   backend:
     build:
       context: .
       dockerfile: backend/Dockerfile
+    container_name: youtube_audit_backend
+    restart: unless-stopped
     ports:
       - "8000:8000"
     volumes:
-      - ./backend:/app
+      - ./backend:/app/backend
       - ./uploads:/app/uploads
     env_file:
       - .env
     environment:
       - PYTHONUNBUFFERED=1
+      - DATABASE_URL=postgresql://youtube_audit:youtube_audit_password@postgres:5432/youtube_audit
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
+  # Celery Worker for Background Tasks
+  celery_worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: youtube_audit_celery_worker
+    restart: unless-stopped
+    command: celery -A backend.celery_app worker --loglevel=info --concurrency=2
+    volumes:
+      - ./backend:/app/backend
+      - ./uploads:/app/uploads
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DATABASE_URL=postgresql://youtube_audit:youtube_audit_password@postgres:5432/youtube_audit
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Celery Beat for Scheduled Tasks
+  celery_beat:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: youtube_audit_celery_beat
+    restart: unless-stopped
+    command: celery -A backend.celery_app beat --loglevel=info
+    volumes:
+      - ./backend:/app/backend
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # Flower - Celery Monitoring UI
+  flower:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: youtube_audit_flower
+    restart: unless-stopped
+    command: celery -A backend.celery_app flower --port=5555
+    ports:
+      - "5555:5555"
+    env_file:
+      - .env
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # Streamlit Frontend
   frontend:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+    container_name: youtube_audit_frontend
+    restart: unless-stopped
     ports:
       - "8501:8501"
     volumes:
@@ -32,6 +147,14 @@ services:
     depends_on:
       - backend
 
+# Persistent Data Volumes
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+# Network Configuration
 networks:
   default:
     driver: bridge

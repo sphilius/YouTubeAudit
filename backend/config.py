@@ -72,6 +72,73 @@ class AppConfig(BaseSettings):
         return v
 
     # ========================================================================
+    # Database Settings
+    # ========================================================================
+
+    database_url: str = Field(
+        default="postgresql://youtube_audit:youtube_audit_password@localhost:5432/youtube_audit",
+        description="PostgreSQL database connection URL"
+    )
+
+    database_pool_size: int = Field(
+        default=10,
+        description="Database connection pool size",
+        ge=5,
+        le=50
+    )
+
+    database_max_overflow: int = Field(
+        default=20,
+        description="Maximum overflow connections",
+        ge=10,
+        le=100
+    )
+
+    # ========================================================================
+    # Redis Settings
+    # ========================================================================
+
+    redis_url: str = Field(
+        default="redis://localhost:6379/0",
+        description="Redis connection URL"
+    )
+
+    redis_max_connections: int = Field(
+        default=50,
+        description="Maximum Redis connections in pool",
+        ge=10,
+        le=200
+    )
+
+    # ========================================================================
+    # Celery Settings
+    # ========================================================================
+
+    celery_broker_url: str = Field(
+        default="redis://localhost:6379/0",
+        description="Celery broker URL (message queue)"
+    )
+
+    celery_result_backend: str = Field(
+        default="redis://localhost:6379/1",
+        description="Celery result backend URL"
+    )
+
+    celery_task_time_limit: int = Field(
+        default=3600,
+        description="Task time limit in seconds (1 hour)",
+        ge=300,
+        le=7200
+    )
+
+    celery_worker_concurrency: int = Field(
+        default=2,
+        description="Number of concurrent Celery workers",
+        ge=1,
+        le=16
+    )
+
+    # ========================================================================
     # File Upload Settings
     # ========================================================================
 
