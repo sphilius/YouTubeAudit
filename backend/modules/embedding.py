@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import List, Any, Dict
+from typing import List, Any, Dict, Optional
 import numpy as np
 from backend.utils.logging_config import get_logger
+from backend.config import get_config
 from backend.exceptions import (
     EmbeddingError,
     ModelLoadError,
@@ -10,13 +11,25 @@ from backend.exceptions import (
 )
 
 log = get_logger(__name__)
+config = get_config()
 
-# Conditional import for FAISS to allow the application to run without it for now
+# Conditional import for FAISS
 try:
     import faiss
 except ImportError:
     faiss = None
     log.warning("FAISS not available - vector store functionality will be limited")
+
+# Conditional import for sentence-transformers
+try:
+    from sentence_transformers import SentenceTransformer
+    SENTENCE_TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    SENTENCE_TRANSFORMERS_AVAILABLE = False
+    log.warning("sentence-transformers not available - will use random embeddings")
+
+# Global model cache (singleton pattern)
+_embedding_model: Optional[SentenceTransformer] = None
 
 class VectorStore(ABC):
     """Abstract base class for a vector store."""
@@ -86,39 +99,203 @@ class FaissVectorStore(VectorStore):
             log.error("Failed to query FAISS index", error=str(e))
             raise VectorStoreError(operation="query", reason=str(e))
 
-def get_video_embeddings(video_metadata: List[Dict[str, Any]]) -> np.ndarray:
+def get_embedding_model() -> SentenceTransformer:
     """
-    Generates embeddings for a list of video metadata.
-    In a real implementation, this would call an embedding model (e.g., Gemini).
-    For now, this is a placeholder.
-
-    Args:
-        video_metadata: A list of dictionaries, each containing video metadata.
+    Get or load the sentence transformer model (singleton).
 
     Returns:
-        A numpy array of embeddings.
+        SentenceTransformer model
+
+    Raises:
+        ModelLoadError: If model fails to load
+    """
+    global _embedding_model
+
+    if _embedding_model is None:
+        if not SENTENCE_TRANSFORMERS_AVAILABLE:
+            raise ModelLoadError(
+                model_name="sentence-transformers",
+                reason="sentence-transformers library not installed. Install with: pip install sentence-transformers"
+            )
+
+        model_name = config.embedding_model_name
+        log.info("Loading sentence transformer model", model_name=model_name)
+
+        try:
+            _embedding_model = SentenceTransformer(model_name)
+            log.info(
+                "Sentence transformer model loaded successfully",
+                model_name=model_name,
+                max_seq_length=_embedding_model.max_seq_length,
+                embedding_dimension=_embedding_model.get_sentence_embedding_dimension()
+            )
+        except Exception as e:
+            log.error("Failed to load sentence transformer model", model_name=model_name, error=str(e))
+            raise ModelLoadError(model_name=model_name, reason=str(e))
+
+    return _embedding_model
+
+
+def create_text_from_metadata(video: Dict[str, Any]) -> str:
+    """
+    Create a rich text representation from video metadata.
+
+    Combines title, description, tags, and channel info into a single string
+    for embedding generation.
+
+    Args:
+        video: Video metadata dictionary from YouTube API
+
+    Returns:
+        Text string for embedding
+    """
+    parts = []
+
+    # Extract from YouTube API response structure
+    snippet = video.get('snippet', {})
+    statistics = video.get('statistics', {})
+
+    # Title (most important)
+    title = snippet.get('title', '')
+    if title:
+        parts.append(f"Title: {title}")
+
+    # Description
+    description = snippet.get('description', '')
+    if description:
+        # Limit description length to avoid overwhelming the model
+        description = description[:500]
+        parts.append(f"Description: {description}")
+
+    # Tags
+    tags = snippet.get('tags', [])
+    if tags:
+        tags_str = ', '.join(tags[:10])  # Limit to first 10 tags
+        parts.append(f"Tags: {tags_str}")
+
+    # Channel
+    channel_title = snippet.get('channelTitle', '')
+    if channel_title:
+        parts.append(f"Channel: {channel_title}")
+
+    # Category (if available)
+    category = snippet.get('categoryId', '')
+    if category:
+        parts.append(f"Category ID: {category}")
+
+    # Combine all parts
+    text = ' | '.join(parts)
+
+    # Fallback if no meaningful content
+    if not text.strip():
+        video_id = video.get('id', 'unknown')
+        text = f"Video {video_id}"
+
+    return text
+
+
+def get_video_embeddings(video_metadata: List[Dict[str, Any]]) -> np.ndarray:
+    """
+    Generates semantic embeddings for a list of video metadata using sentence-transformers.
+
+    This function uses a pre-trained transformer model to create dense vector
+    representations of video content based on titles, descriptions, tags, etc.
+
+    Features:
+    - Real semantic embeddings (not random!)
+    - Batch processing for efficiency
+    - Progress tracking
+    - Automatic model caching
+
+    Args:
+        video_metadata: A list of dictionaries, each containing video metadata
+                       from YouTube API (with 'snippet', 'statistics', etc.)
+
+    Returns:
+        A numpy array of embeddings with shape (num_videos, embedding_dim)
+        Default model 'all-MiniLM-L6-v2' produces 384-dimensional embeddings
 
     Raises:
         EmbeddingError: If embedding generation fails
+        ModelLoadError: If model cannot be loaded
 
-    Note:
-        This is currently a placeholder implementation returning random embeddings.
-        Real implementation will use sentence-transformers or similar.
+    Example:
+        >>> metadata = [{"snippet": {"title": "...", "description": "..."}}]
+        >>> embeddings = get_video_embeddings(metadata)
+        >>> print(embeddings.shape)  # (1, 384)
     """
-    log.info("Starting embedding generation", video_count=len(video_metadata))
+    if not video_metadata:
+        log.warning("get_video_embeddings called with empty metadata list")
+        return np.array([]).reshape(0, config.embedding_dimension)
+
+    log.info(
+        "Starting embedding generation",
+        video_count=len(video_metadata),
+        model_name=config.embedding_model_name
+    )
 
     try:
-        # Placeholder implementation
-        # TODO: Implement real embedding generation using sentence-transformers
-        embedding_dimension = 768  # Example dimension
-        embeddings = np.random.rand(len(video_metadata), embedding_dimension).astype('float32')
+        # Load or get cached model
+        model = get_embedding_model()
 
-        log.info("Embedding generation complete",
-                 video_count=len(video_metadata),
-                 embedding_dimension=embedding_dimension,
-                 embeddings_shape=embeddings.shape)
+        # Create text representations from video metadata
+        log.debug("Creating text representations from metadata")
+        texts = []
+        for i, video in enumerate(video_metadata):
+            text = create_text_from_metadata(video)
+            texts.append(text)
+
+            if (i + 1) % 100 == 0:
+                log.debug("Text creation progress", processed=i+1, total=len(video_metadata))
+
+        log.info("Text representations created", count=len(texts))
+
+        # Generate embeddings in batches
+        log.info(
+            "Generating embeddings",
+            batch_size=config.embedding_batch_size,
+            batches=len(texts) // config.embedding_batch_size + 1
+        )
+
+        embeddings = model.encode(
+            texts,
+            batch_size=config.embedding_batch_size,
+            show_progress_bar=False,  # We log progress ourselves
+            convert_to_numpy=True,
+            normalize_embeddings=True  # L2 normalization for better similarity
+        )
+
+        # Ensure correct dtype
+        embeddings = embeddings.astype('float32')
+
+        log.info(
+            "Embedding generation complete",
+            video_count=len(video_metadata),
+            embedding_dimension=embeddings.shape[1],
+            embeddings_shape=embeddings.shape,
+            model_name=config.embedding_model_name
+        )
+
+        # Verify dimensions match config
+        expected_dim = model.get_sentence_embedding_dimension()
+        if embeddings.shape[1] != expected_dim:
+            log.warning(
+                "Embedding dimension mismatch",
+                expected=expected_dim,
+                actual=embeddings.shape[1]
+            )
+
         return embeddings
 
+    except ModelLoadError:
+        # Re-raise model loading errors
+        raise
+
     except Exception as e:
-        log.error("Embedding generation failed", error=str(e), video_count=len(video_metadata))
+        log.error(
+            "Embedding generation failed",
+            error=str(e),
+            video_count=len(video_metadata),
+            exc_info=True
+        )
         raise EmbeddingError(f"Failed to generate embeddings: {str(e)}")
