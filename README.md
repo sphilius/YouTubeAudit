@@ -1,8 +1,59 @@
 # YouTube Topic Audit Engine
 
-This project is a YouTube Topic Audit engine. It ingests a user’s YouTube Takeout data (`watch-history.json`), enriches it with video metadata, generates embeddings for video titles, clusters the content into thematic topics, and presents the findings in an interactive dashboard.
+This project is a YouTube Topic Audit engine. It ingests a user's YouTube Takeout data (`watch-history.json`), enriches it with video metadata, generates embeddings for video titles, clusters the content into thematic topics, and presents the findings in an interactive dashboard.
 
 The goal is to produce an interactive dashboard that helps users discover and analyze their viewing patterns and identify their strongest thematic niches.
+
+## Interface Options
+
+YouTube Audit Engine provides **two interface modes**:
+
+### 🎬 Interactive Launcher (Recommended)
+
+The easiest way to get started! Choose between CLI or Web interface with a friendly menu:
+
+**Linux/Mac:**
+```bash
+python launcher.py
+```
+
+**Windows:**
+```powershell
+.\launcher.ps1
+```
+
+The launcher will:
+- Present a menu to choose CLI or Web mode
+- Automatically check and start the backend if needed
+- Guide you through the setup process
+
+### 💻 CLI Mode
+
+Terminal-based interface perfect for:
+- Automation and scripting
+- Remote access via SSH
+- CI/CD integration
+- Batch processing
+
+```bash
+# Interactive mode
+python -m cli.interface --interactive
+
+# Direct analysis
+python -m cli.interface watch-history.json -o results.json
+```
+
+See [CLI_GUIDE.md](CLI_GUIDE.md) for complete CLI documentation.
+
+### 🌐 Web Mode
+
+Browser-based Streamlit interface with:
+- Rich visualizations and charts
+- Interactive data exploration
+- Drag-and-drop file upload
+- Export to multiple formats
+
+Access at: http://localhost:8501
 
 ## Architecture
 
@@ -15,9 +66,16 @@ This separation ensures the UI remains responsive and stable, as all computation
 
 ## Prerequisites
 
-*   Docker
-*   Docker Compose
-*   A Google API Key with the YouTube Data API v3 enabled.
+**Minimum Requirements:**
+*   Python 3.10 or higher
+*   A Google API Key with the YouTube Data API v3 enabled
+
+**Optional (depending on setup method):**
+*   Docker & Docker Compose (for containerized deployment)
+*   PostgreSQL (for production persistence)
+*   Redis (for caching and async tasks)
+
+**Note:** For testing and development, you can use SQLite + fakeredis (no Docker required). See [WINDOWS_SETUP.md](WINDOWS_SETUP.md) for alternative setup options.
 
 ## How to Run
 
