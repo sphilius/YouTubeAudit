@@ -10,6 +10,7 @@ import os
 import tempfile
 from werkzeug.utils import secure_filename
 from typing import Dict, Any
+from datetime import datetime
 
 # Import configuration and logging
 from backend.config import get_config, validate_config
@@ -31,7 +32,16 @@ from backend.validators import (
 # Import exceptions
 from backend.exceptions import YouTubeAuditError, ValidationError
 
-# Import analysis modules
+# Import database and models
+from backend.database import get_session
+from backend.models.analysis import Analysis, AnalysisStatus
+from backend.models.video import Video
+from backend.models.cluster import Cluster
+
+# Import Celery tasks
+from backend.tasks.analysis import analyze_watch_history
+
+# Import analysis modules (for legacy sync endpoint if needed)
 from backend.modules import ingestion, enrichment, embedding, clustering, scoring
 
 # ============================================================================
@@ -226,18 +236,23 @@ def detailed_health():
 @app.route("/analyze", methods=["POST"])
 def analyze():
     """
-    Main analysis endpoint.
+    Async analysis endpoint - queues analysis job and returns immediately.
 
-    Accepts file upload and API key to run the analysis pipeline.
+    Accepts file upload and API key to run the analysis pipeline asynchronously.
 
     Request:
         - Headers: Authorization: Bearer <token>
         - Form data:
             - file: YouTube Takeout file (.zip or .json)
-            - api_key: Google API key
+            - api_key: Google API key (optional if set in config)
+            - num_clusters: Number of clusters (optional, default 10)
 
     Returns:
-        JSON response with analysis results
+        HTTP 202 Accepted with:
+        - task_id: Celery task ID for tracking
+        - analysis_id: Database analysis ID
+        - status_url: URL to check job status
+        - estimated_time: Estimated completion time
 
     Raises:
         Various YouTubeAuditError exceptions for different failure cases
@@ -288,42 +303,321 @@ def analyze():
                 user_message="Please provide a Google API key for video metadata enrichment."
             )
 
-    # 4. Save File Securely
+    # 4. Get optional parameters
+    num_clusters = request.form.get("num_clusters", 10, type=int)
+
+    # 5. Save File Securely (don't cleanup yet - task will need it)
     filename = secure_filename(file.filename)
     filename = sanitize_filename(filename)
 
-    temp_dir = tempfile.mkdtemp()
-    file_path = os.path.join(temp_dir, filename)
+    # Use uploads directory instead of temp
+    uploads_dir = os.path.join(os.getcwd(), 'uploads')
+    os.makedirs(uploads_dir, exist_ok=True)
 
+    file_path = os.path.join(uploads_dir, f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{filename}")
     file.save(file_path)
-    log.info("File saved temporarily", path=file_path, size_bytes=os.path.getsize(file_path))
+    log.info("File saved", path=file_path, size_bytes=os.path.getsize(file_path))
 
+    # Validate saved file
+    validate_saved_file(file_path)
+
+    # 6. Create Analysis database record
+    session = get_session()
     try:
-        # Validate saved file
-        validate_saved_file(file_path)
+        analysis = Analysis(
+            task_id="pending",  # Will update after task creation
+            status=AnalysisStatus.PENDING,
+            created_at=datetime.utcnow()
+        )
+        session.add(analysis)
+        session.commit()
+        analysis_id = analysis.id
 
-        # 5. Run Analysis Pipeline
-        log.info("Starting analysis pipeline")
-        results = run_analysis_pipeline(file_path, api_key)
+        log.info("Analysis record created", analysis_id=analysis_id)
 
-        log.info("Analysis request completed successfully")
-        return jsonify(results)
+        # 7. Queue Celery task
+        task = analyze_watch_history.apply_async(
+            args=[file_path, analysis_id],
+            kwargs={'api_key': api_key, 'num_clusters': num_clusters}
+        )
+
+        # Update analysis record with task_id
+        analysis.task_id = task.id
+        session.commit()
+
+        log.info(
+            "Analysis task queued",
+            task_id=task.id,
+            analysis_id=analysis_id,
+            file_path=file_path
+        )
+
+        # 8. Return response immediately
+        return jsonify({
+            'status': 'accepted',
+            'message': 'Analysis job queued successfully',
+            'task_id': task.id,
+            'analysis_id': analysis_id,
+            'status_url': f'/jobs/{task.id}',
+            'results_url': f'/jobs/{task.id}/results',
+            'estimated_time_minutes': 5,  # Rough estimate
+            'created_at': datetime.utcnow().isoformat()
+        }), 202
+
+    except Exception as e:
+        session.rollback()
+        log.error("Failed to queue analysis", error=str(e))
+        raise
+    finally:
+        session.close()
+
+
+@app.route("/jobs/<task_id>", methods=["GET"])
+@app.route("/status/<task_id>", methods=["GET"])
+def get_job_status(task_id):
+    """
+    Get status of an analysis job.
+
+    Args:
+        task_id: Celery task ID
+
+    Returns:
+        JSON response with job status and progress
+    """
+    from celery.result import AsyncResult
+
+    log.debug("Job status request", task_id=task_id)
+
+    # Get task result
+    task = AsyncResult(task_id)
+
+    # Get analysis from database
+    session = get_session()
+    try:
+        analysis = session.query(Analysis).filter(Analysis.task_id == task_id).first()
+
+        if not analysis:
+            log.warning("Analysis not found for task", task_id=task_id)
+            return jsonify({
+                'task_id': task_id,
+                'state': task.state,
+                'status': 'unknown',
+                'message': 'Analysis record not found'
+            }), 404
+
+        response = {
+            'task_id': task_id,
+            'analysis_id': analysis.id,
+            'state': task.state,
+            'status': analysis.status.value if hasattr(analysis.status, 'value') else str(analysis.status),
+            'created_at': analysis.created_at.isoformat() if analysis.created_at else None,
+            'started_at': analysis.started_at.isoformat() if analysis.started_at else None,
+            'completed_at': analysis.completed_at.isoformat() if analysis.completed_at else None,
+        }
+
+        if task.state == 'PENDING':
+            response['message'] = 'Job is waiting in queue'
+            response['progress'] = 0
+
+        elif task.state == 'PROGRESS':
+            # Get progress info
+            info = task.info or {}
+            response['message'] = info.get('status', 'Processing...')
+            response['progress'] = info.get('percent', 0)
+            response['current'] = info.get('current', 0)
+            response['total'] = info.get('total', 100)
+
+        elif task.state == 'SUCCESS':
+            response['message'] = 'Analysis complete'
+            response['progress'] = 100
+            response['result'] = task.result
+            response['results_url'] = f'/jobs/{task_id}/results'
+
+        elif task.state == 'FAILURE':
+            response['message'] = 'Analysis failed'
+            response['error'] = str(task.info) if task.info else 'Unknown error'
+            response['error_message'] = analysis.error_message
+
+        elif task.state == 'RETRY':
+            response['message'] = 'Job is being retried'
+            response['retry_count'] = task.info.get('retry_count', 0) if task.info else 0
+
+        elif task.state == 'REVOKED':
+            response['message'] = 'Job was cancelled'
+
+        else:
+            response['message'] = f'Job state: {task.state}'
+
+        # Add statistics if available
+        if analysis.total_videos > 0:
+            response['statistics'] = {
+                'total_videos': analysis.total_videos,
+                'processed_videos': analysis.processed_videos,
+                'failed_videos': analysis.failed_videos,
+                'unique_channels': analysis.unique_channels,
+                'num_clusters': analysis.num_clusters
+            }
+
+        return jsonify(response), 200
 
     finally:
-        # 6. Cleanup
-        if config.cleanup_temp_files:
-            try:
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-                    log.debug("Temporary file removed", path=file_path)
+        session.close()
 
-                if os.path.exists(temp_dir):
-                    os.rmdir(temp_dir)
-                    log.debug("Temporary directory removed", path=temp_dir)
-            except Exception as e:
-                log.warning("Failed to cleanup temporary files",
-                           error=str(e),
-                           file_path=file_path)
+
+@app.route("/jobs/<task_id>/results", methods=["GET"])
+def get_job_results(task_id):
+    """
+    Get results of a completed analysis job.
+
+    Args:
+        task_id: Celery task ID
+
+    Returns:
+        JSON response with full analysis results
+    """
+    from celery.result import AsyncResult
+
+    log.debug("Job results request", task_id=task_id)
+
+    # Get task result
+    task = AsyncResult(task_id)
+
+    if task.state != 'SUCCESS':
+        return jsonify({
+            'error': 'Results not available',
+            'message': f'Job is in state: {task.state}',
+            'status_url': f'/jobs/{task_id}'
+        }), 400
+
+    # Get analysis from database with all related data
+    session = get_session()
+    try:
+        analysis = session.query(Analysis).filter(Analysis.task_id == task_id).first()
+
+        if not analysis:
+            return jsonify({
+                'error': 'Analysis not found',
+                'task_id': task_id
+            }), 404
+
+        # Build response with full results
+        response = {
+            'analysis_id': analysis.id,
+            'task_id': task_id,
+            'status': 'completed',
+            'created_at': analysis.created_at.isoformat(),
+            'completed_at': analysis.completed_at.isoformat() if analysis.completed_at else None,
+            'duration_seconds': analysis.duration_seconds,
+            'summary': {
+                'total_videos': analysis.total_videos,
+                'processed_videos': analysis.processed_videos,
+                'failed_videos': analysis.failed_videos,
+                'unique_channels': analysis.unique_channels,
+                'num_clusters': analysis.num_clusters,
+                'total_watch_time_hours': analysis.total_watch_time_hours,
+                'date_range': {
+                    'start': analysis.date_range_start.isoformat() if analysis.date_range_start else None,
+                    'end': analysis.date_range_end.isoformat() if analysis.date_range_end else None
+                },
+                'quota_used': analysis.quota_used,
+                'embedding_model': analysis.embedding_model,
+                'clustering_algorithm': analysis.clustering_algorithm
+            }
+        }
+
+        # Get clusters
+        clusters = session.query(Cluster).filter(Cluster.analysis_id == analysis.id).all()
+        response['clusters'] = [cluster.to_dict() for cluster in clusters]
+
+        # Get top channels (aggregate from videos)
+        from sqlalchemy import func
+        top_channels = session.query(
+            Video.channel_name,
+            func.count(Video.id).label('video_count')
+        ).filter(
+            Video.analysis_id == analysis.id,
+            Video.channel_name.isnot(None)
+        ).group_by(
+            Video.channel_name
+        ).order_by(
+            func.count(Video.id).desc()
+        ).limit(20).all()
+
+        response['top_channels'] = [
+            {'channel_name': name, 'video_count': count}
+            for name, count in top_channels
+        ]
+
+        # Optionally include sample videos per cluster
+        include_videos = request.args.get('include_videos', 'false').lower() == 'true'
+        if include_videos:
+            response['clusters_with_videos'] = []
+            for cluster in clusters:
+                cluster_videos = session.query(Video).filter(
+                    Video.cluster_id == cluster.id
+                ).limit(10).all()
+
+                response['clusters_with_videos'].append({
+                    'cluster': cluster.to_dict(),
+                    'sample_videos': [v.to_dict() for v in cluster_videos]
+                })
+
+        return jsonify(response), 200
+
+    finally:
+        session.close()
+
+
+@app.route("/jobs/<task_id>", methods=["DELETE"])
+def cancel_job(task_id):
+    """
+    Cancel a running analysis job.
+
+    Args:
+        task_id: Celery task ID
+
+    Returns:
+        JSON response confirming cancellation
+    """
+    from celery.result import AsyncResult
+    from backend.celery_app import celery_app
+
+    log.info("Job cancellation request", task_id=task_id)
+
+    # Get task
+    task = AsyncResult(task_id)
+
+    if task.state in ['SUCCESS', 'FAILURE']:
+        return jsonify({
+            'error': 'Cannot cancel completed job',
+            'task_id': task_id,
+            'state': task.state
+        }), 400
+
+    # Revoke task
+    celery_app.control.revoke(task_id, terminate=True, signal='SIGKILL')
+
+    # Update analysis record
+    session = get_session()
+    try:
+        analysis = session.query(Analysis).filter(Analysis.task_id == task_id).first()
+        if analysis:
+            analysis.status = AnalysisStatus.FAILED
+            analysis.error_message = "Job cancelled by user"
+            analysis.completed_at = datetime.utcnow()
+            session.commit()
+
+        log.info("Job cancelled", task_id=task_id)
+
+        return jsonify({
+            'message': 'Job cancelled successfully',
+            'task_id': task_id,
+            'analysis_id': analysis.id if analysis else None,
+            'cancelled_at': datetime.utcnow().isoformat()
+        }), 200
+
+    finally:
+        session.close()
 
 
 # ============================================================================
