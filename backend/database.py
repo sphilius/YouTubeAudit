@@ -75,6 +75,27 @@ def get_session_factory() -> sessionmaker:
     return _SessionLocal
 
 
+def get_session() -> Session:
+    """
+    Get a new database session.
+
+    Returns:
+        SQLAlchemy Session (must be closed by caller)
+
+    Example:
+        >>> from backend.database import get_session
+        >>> session = get_session()
+        >>> try:
+        ...     # Use session
+        ...     session.query(Analysis).all()
+        ...     session.commit()
+        ... finally:
+        ...     session.close()
+    """
+    SessionLocal = get_session_factory()
+    return SessionLocal()
+
+
 def get_db() -> Generator[Session, None, None]:
     """
     Get a database session (dependency injection for FastAPI/Flask).
