@@ -30,9 +30,29 @@ def normalize_redis_url(url: str) -> str:
         return url.replace('fakeredis://', 'redis://')
     return url
 
+
+def get_result_backend_url(backend_url: str) -> str:
+    """
+    Get appropriate result backend URL for Celery.
+
+    For fakeredis testing, use RPC backend (stores results in broker).
+    This avoids needing a real Redis instance for result storage.
+
+    Args:
+        backend_url: Configured backend URL
+
+    Returns:
+        Celery-compatible result backend URL
+    """
+    if backend_url.startswith('fakeredis://'):
+        # Use RPC backend for testing (stores results in broker queue)
+        return 'rpc://'
+    return normalize_redis_url(backend_url)
+
+
 # Normalize URLs for Celery
 broker_url = normalize_redis_url(config.celery_broker_url)
-backend_url = normalize_redis_url(config.celery_result_backend)
+backend_url = get_result_backend_url(config.celery_result_backend)
 
 # Create Celery app instance
 celery_app = Celery(
@@ -45,7 +65,7 @@ celery_app = Celery(
 # Celery Configuration
 celery_app.conf.update(
     # Result Backend
-    result_backend=config.celery_result_backend,
+    result_backend=backend_url,  # Use normalized URL (supports fakeredis)
     result_expires=3600 * 24 * 7,  # Results expire after 7 days
     result_extended=True,  # Store additional task metadata
 
