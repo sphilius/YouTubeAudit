@@ -275,7 +275,7 @@ def analyze_watch_history(
                     label=cluster_data.get('label', f"Cluster {cluster_data.get('cluster_id')}"),
                     size=cluster_data.get('size', 0),
                     top_keywords=cluster_data.get('keywords', [])[:10],
-                    metadata=cluster_data
+                    cluster_metadata=cluster_data
                 )
                 cluster_models.append(cluster_model)
                 session.add(cluster_model)

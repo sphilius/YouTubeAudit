@@ -34,7 +34,7 @@ class Cluster(Base):
         centroid: Cluster centroid vector (center point in embedding space)
         avg_distance_to_center: Average distance of videos to centroid
         silhouette_score: Silhouette score for cluster quality
-        metadata: Additional JSON metadata
+        cluster_metadata: Additional JSON metadata
         analysis: Relationship to Analysis model
         videos: Relationship to Video models
     """
@@ -84,8 +84,8 @@ class Cluster(Base):
                              comment="Silhouette score for cluster quality (-1 to 1)")
 
     # Additional Data
-    metadata = Column(JSON, nullable=True,
-                     comment="Additional cluster metadata (JSON)")
+    cluster_metadata = Column(JSON, nullable=True,
+                             comment="Additional cluster metadata (JSON)")
 
     # Relationships
     analysis = relationship("Analysis", back_populates="clusters")
@@ -126,7 +126,7 @@ class Cluster(Base):
             'top_keywords': self.top_keywords,
             'avg_distance_to_center': self.avg_distance_to_center,
             'silhouette_score': self.silhouette_score,
-            'metadata': self.metadata
+            'cluster_metadata': self.cluster_metadata
         }
 
         if include_centroid and self.centroid:
