@@ -3,6 +3,8 @@ Celery application configuration for YouTube Audit Engine.
 
 This module initializes the Celery app for distributed task processing.
 Tasks are queued to Redis and processed by worker processes.
+
+Supports fakeredis for testing without Redis installation.
 """
 
 from celery import Celery
@@ -11,11 +13,32 @@ from backend.config import get_config
 # Load configuration
 config = get_config()
 
+# Helper function to convert fakeredis URLs to redis URLs for Celery
+def normalize_redis_url(url: str) -> str:
+    """
+    Convert fakeredis:// URLs to redis:// for Celery compatibility.
+
+    Args:
+        url: Redis or fakeredis URL
+
+    Returns:
+        Normalized redis:// URL
+    """
+    if url.startswith('fakeredis://'):
+        # Celery doesn't understand fakeredis://, so convert to redis://
+        # The actual fakeredis usage is handled by backend.cache module
+        return url.replace('fakeredis://', 'redis://')
+    return url
+
+# Normalize URLs for Celery
+broker_url = normalize_redis_url(config.celery_broker_url)
+backend_url = normalize_redis_url(config.celery_result_backend)
+
 # Create Celery app instance
 celery_app = Celery(
     'youtube_audit',
-    broker=config.celery_broker_url,
-    backend=config.celery_result_backend,
+    broker=broker_url,
+    backend=backend_url,
     include=['backend.tasks.analysis']  # Auto-discover task modules
 )
 

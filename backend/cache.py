@@ -3,6 +3,8 @@ Redis connection and cache management for YouTube Audit Engine.
 
 This module provides a singleton Redis client with connection pooling
 for caching and other Redis operations.
+
+Supports both real Redis and fakeredis (for testing without Redis installation).
 """
 
 import redis
@@ -20,8 +22,11 @@ def get_redis_client() -> redis.Redis:
     """
     Get the Redis client instance (singleton).
 
+    Automatically uses fakeredis if REDIS_URL starts with 'fakeredis://'.
+    This allows testing without a Redis server installation.
+
     Returns:
-        Redis client with connection pooling
+        Redis client (real or fake) with connection pooling
 
     Example:
         >>> from backend.cache import get_redis_client
@@ -39,26 +44,41 @@ def get_redis_client() -> redis.Redis:
             max_connections=config.redis_max_connections
         )
 
-        # Create connection pool
-        pool = redis.ConnectionPool.from_url(
-            config.redis_url,
-            max_connections=config.redis_max_connections,
-            decode_responses=True,  # Automatically decode bytes to strings
-            socket_connect_timeout=5,
-            socket_timeout=5,
-            retry_on_timeout=True
-        )
+        # Check if using fakeredis
+        if config.redis_url.startswith('fakeredis://'):
+            log.info("Using fakeredis (testing mode - no Redis server required)")
+            try:
+                import fakeredis
+                _redis_client = fakeredis.FakeStrictRedis(decode_responses=True)
+                log.info("fakeredis client created successfully")
+            except ImportError:
+                log.error("fakeredis not installed. Install with: pip install fakeredis")
+                raise ImportError(
+                    "fakeredis is required when using fakeredis:// URL. "
+                    "Install with: pip install fakeredis[lua]"
+                )
+        else:
+            # Use real Redis
+            # Create connection pool
+            pool = redis.ConnectionPool.from_url(
+                config.redis_url,
+                max_connections=config.redis_max_connections,
+                decode_responses=True,  # Automatically decode bytes to strings
+                socket_connect_timeout=5,
+                socket_timeout=5,
+                retry_on_timeout=True
+            )
 
-        # Create Redis client with pool
-        _redis_client = redis.Redis(connection_pool=pool)
+            # Create Redis client with pool
+            _redis_client = redis.Redis(connection_pool=pool)
 
-        # Test connection
-        try:
-            _redis_client.ping()
-            log.info("Redis connection established successfully")
-        except redis.ConnectionError as e:
-            log.error("Failed to connect to Redis", error=str(e))
-            raise
+            # Test connection
+            try:
+                _redis_client.ping()
+                log.info("Redis connection established successfully")
+            except redis.ConnectionError as e:
+                log.error("Failed to connect to Redis", error=str(e))
+                raise
 
     return _redis_client
 
