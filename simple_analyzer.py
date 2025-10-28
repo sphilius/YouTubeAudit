@@ -36,24 +36,59 @@ MIN_CLUSTER_SIZE = 5  # Minimum videos for clustering
 
 
 def load_watch_history(uploaded_file) -> List[Dict[str, Any]]:
-    """Load and parse YouTube watch history JSON file."""
+    """Load and parse YouTube watch history (JSON) or playlist (CSV) file."""
+    filename = uploaded_file.name.lower()
+
     try:
-        content = uploaded_file.read()
-        data = json.loads(content)
+        # Handle CSV files (playlists from Google Takeout)
+        if filename.endswith('.csv'):
+            import csv
+            import io
 
-        videos = []
-        for item in data:
-            # YouTube takeout format
-            if 'titleUrl' in item:
-                video_id = item.get('titleUrl', '').split('?v=')[-1]
-                videos.append({
-                    'video_id': video_id,
-                    'title': item.get('title', 'Unknown'),
-                    'time': item.get('time', ''),
-                    'channel': item.get('subtitles', [{}])[0].get('name', 'Unknown') if item.get('subtitles') else 'Unknown'
-                })
+            content = uploaded_file.read().decode('utf-8')
+            csv_reader = csv.DictReader(io.StringIO(content))
 
-        return videos
+            videos = []
+            for row in csv_reader:
+                # CSV format has different column names
+                video_url = row.get('Video URL', row.get('URL', ''))
+                video_id = ''
+
+                # Extract video ID from URL
+                if 'youtube.com/watch?v=' in video_url:
+                    video_id = video_url.split('watch?v=')[1].split('&')[0]
+                elif 'youtu.be/' in video_url:
+                    video_id = video_url.split('youtu.be/')[1].split('?')[0]
+
+                if video_id:
+                    videos.append({
+                        'video_id': video_id,
+                        'title': row.get('Video Title', row.get('Title', 'Unknown')),
+                        'time': row.get('Time Added', row.get('Date', '')),
+                        'channel': row.get('Channel Name', row.get('Channel', 'Unknown'))
+                    })
+
+            return videos
+
+        # Handle JSON files (watch history from Google Takeout)
+        else:
+            content = uploaded_file.read()
+            data = json.loads(content)
+
+            videos = []
+            for item in data:
+                # YouTube takeout format
+                if 'titleUrl' in item:
+                    video_id = item.get('titleUrl', '').split('?v=')[-1]
+                    videos.append({
+                        'video_id': video_id,
+                        'title': item.get('title', 'Unknown'),
+                        'time': item.get('time', ''),
+                        'channel': item.get('subtitles', [{}])[0].get('name', 'Unknown') if item.get('subtitles') else 'Unknown'
+                    })
+
+            return videos
+
     except Exception as e:
         st.error(f"Error loading file: {e}")
         return []
@@ -248,8 +283,10 @@ def main():
     """Main Streamlit app."""
     st.title("📺 YouTube Watch History Analyzer")
     st.markdown("""
-    Upload your YouTube watch history and get AI-powered insights about your viewing patterns,
+    Upload your YouTube watch history (JSON) or playlists (CSV) and get AI-powered insights about your viewing patterns,
     content themes, and recommendations for content creation.
+
+    **Accepts:** `watch-history.json` or any playlist CSV from Google Takeout
     """)
 
     # Sidebar configuration
@@ -280,24 +317,33 @@ def main():
 
         st.markdown("---")
         st.markdown("""
-        ### 📝 How to get your watch history:
+        ### 📝 How to get your data:
+
+        **Watch History (JSON):**
         1. Go to [Google Takeout](https://takeout.google.com/)
         2. Deselect all, select only **YouTube**
         3. Click "All YouTube data included"
         4. Select only **history**
         5. Download and extract
         6. Upload `watch-history.json`
+
+        **Playlists (CSV):**
+        1. Go to [Google Takeout](https://takeout.google.com/)
+        2. Deselect all, select only **YouTube**
+        3. Select **playlists**
+        4. Download and extract
+        5. Upload any CSV file from `playlists/` folder
         """)
 
     # File upload
     uploaded_file = st.file_uploader(
-        "Upload watch-history.json",
-        type=['json'],
-        help="Your YouTube watch history from Google Takeout"
+        "Upload watch-history.json or playlist CSV",
+        type=['json', 'csv'],
+        help="Your YouTube watch history (JSON) or playlist (CSV) from Google Takeout"
     )
 
     if not uploaded_file:
-        st.info("👆 Upload your watch-history.json file to get started!")
+        st.info("👆 Upload your watch-history.json or playlist CSV file to get started!")
         return
 
     if not api_key:
