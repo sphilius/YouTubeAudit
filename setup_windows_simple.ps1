@@ -44,18 +44,16 @@ Write-Host ""
 
 # Install dependencies
 Write-Host "4. Installing dependencies..." -ForegroundColor Yellow
-Write-Host "   This may take several minutes..." -ForegroundColor Gray
+Write-Host "   This may take several minutes (especially torch & transformers)..." -ForegroundColor Gray
+Write-Host "   Using Windows-compatible requirements (skipping PDF export packages)..." -ForegroundColor Gray
 
-# Install fakeredis first for testing
-pip install fakeredis[lua] --quiet
-Write-Host "   ✓ fakeredis installed" -ForegroundColor Green
-
-# Install main requirements
-pip install -r requirements.txt --quiet
+# Install main requirements (Windows-specific, no C++ build tools needed)
+pip install -r requirements-windows.txt
 if ($LASTEXITCODE -eq 0) {
     Write-Host "   ✓ All dependencies installed" -ForegroundColor Green
 } else {
     Write-Host "   WARNING: Some dependencies may have failed" -ForegroundColor Yellow
+    Write-Host "   You may need to install them manually" -ForegroundColor Yellow
 }
 Write-Host ""
 
