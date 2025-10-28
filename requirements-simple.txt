@@ -17,9 +17,14 @@ plotly>=5.17.0
 # Machine Learning (Clustering)
 scikit-learn>=1.3.0
 
+# AI - Claude for Enhanced Insights (Optional but recommended)
+anthropic>=0.18.0
+
 # AI Embeddings (Optional but recommended)
 sentence-transformers>=2.2.0
 torch>=2.0.0
 
-# Note: sentence-transformers and torch are optional
-# If they fail to install (disk space), the app will fall back to basic clustering
+# Note: sentence-transformers, torch, and anthropic are optional
+# - Without anthropic: Uses basic cluster labels
+# - Without sentence-transformers/torch: Uses simple clustering instead of semantic
+# App works fine without these, just with reduced intelligence
