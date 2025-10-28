@@ -1,0 +1,25 @@
+# Simple YouTube Analyzer - Minimal Requirements
+# Only what's needed for the single-file app
+
+# UI Framework
+streamlit>=1.28.0
+
+# Data Processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# YouTube API
+google-api-python-client>=2.100.0
+
+# Visualization
+plotly>=5.17.0
+
+# Machine Learning (Clustering)
+scikit-learn>=1.3.0
+
+# AI Embeddings (Optional but recommended)
+sentence-transformers>=2.2.0
+torch>=2.0.0
+
+# Note: sentence-transformers and torch are optional
+# If they fail to install (disk space), the app will fall back to basic clustering
